@@ -310,6 +310,23 @@ def compute_timing_metrics(batch, timing_raw):
     }
 
 
+def compute_reward_metrics(batch):
+    reward_tensor = batch.batch['token_level_scores'].sum(-1)
+
+    reward_metrics = {}
+    reward_metrics["reward/mean"] = torch.mean(reward_tensor).detach().item()
+    # Calculate all_correct ratio (value == 3)
+    all_correct = torch.sum(reward_tensor == 3).float() / reward_tensor.numel()
+    reward_metrics["reward/all_correct_ratio"] = all_correct.detach().item()
+    # Calculate format_error ratio (value == -1)
+    format_error = torch.sum(reward_tensor == -1).float() / reward_tensor.numel()
+    reward_metrics["reward/format_error_ratio"] = format_error.detach().item()
+    # Calculate wrong answer ratio (value == -1)
+    format_error = torch.sum(reward_tensor == -0.5).float() / reward_tensor.numel()
+    reward_metrics["reward/wrong_answer_ratio"] = format_error.detach().item()
+    
+    return reward_metrics
+
 @contextmanager
 def _timer(name: str, timing_raw: Dict[str, float]):
     with Timer(name=name, logger=None) as timer:
@@ -578,7 +595,6 @@ class RayPPOTrainer(object):
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
-
             # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
                 return {}
@@ -636,7 +652,9 @@ class RayPPOTrainer(object):
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
-            metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            count_equal_3 = sum(1 for reward in rewards if reward == 3)
+            total_count = len(rewards)
+            metric_dict[f'val/test_score/{data_source}'] = count_equal_3 / total_count if total_count > 0 else 0
 
         return metric_dict
 
@@ -845,7 +863,6 @@ class RayPPOTrainer(object):
                 timing_raw = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
-
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
@@ -892,7 +909,6 @@ class RayPPOTrainer(object):
                     if self.use_reference_policy:
                         # compute reference log_prob
                         with _timer('ref', timing_raw):
-                            ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                             if not self.ref_in_actor:
                                 ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                             else:
@@ -948,6 +964,10 @@ class RayPPOTrainer(object):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
+
+                    # compute reward metrics
+                    reward_metrics = compute_reward_metrics(batch)
+                    metrics.update(reward_metrics)
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \

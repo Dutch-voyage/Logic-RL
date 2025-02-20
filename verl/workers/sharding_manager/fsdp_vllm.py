@@ -49,15 +49,30 @@ class FSDPVLLMShardingManager(BaseShardingManager):
 
         # Full params
         self.full_params = full_params
+        # import torch.distributed.fsdp._traversal_utils as traversal_utils
+        # for submodule in traversal_utils._get_fsdp_states(self.module):
+        #     # for k, v in submodule.state_dict().items():
+        #     #     # print(k)
+        #     #     if k == 'base_model.model.model.embed_tokens.weight':
+        #     #         print(type(v).__name__)
+        #     submodule._state_dict_type = StateDictType.SHARDED_STATE_DICT
+        #     submodule._state_dict_config = ShardedStateDictConfig()
+        #     for k, v in submodule.state_dict().items():
+        #         # print(k)
+        #         if k == 'base_model.model.model.embed_tokens.weight':
+        #             print(type(v).__name__)
+        # print(type(self.module._fsdp_wrapped_module.base_model.model.model.embed_tokens.weight))
+        # assert False
+        
+        # TODO: check if this is correct
         if full_params:
             FSDP.set_state_dict_type(self.module,
                                      state_dict_type=StateDictType.FULL_STATE_DICT,
                                      state_dict_config=FullStateDictConfig())
         else:
             FSDP.set_state_dict_type(self.module,
-                                     state_dict_type=StateDictType.SHARDED_STATE_DICT,
-                                     state_dict_config=ShardedStateDictConfig())
-
+                                    state_dict_type=StateDictType.SHARDED_STATE_DICT,
+                                    state_dict_config=ShardedStateDictConfig())
         # Note that torch_random_states may be different on each dp rank
         self.torch_random_states = torch.cuda.get_rng_state()
         # get a random rng states
@@ -75,26 +90,27 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         if isinstance(self.module._fsdp_wrapped_module, PeftModel):
             # the model to sync weights to is a vLLM model (not a peft model), so we need to merge the adapters
             with FSDP.summon_full_params(self.module):
+                self.module.merge_adapter()
                 params = self.module._fsdp_wrapped_module.base_model.model.state_dict()
             # FIXME: use more rigorous way to filter out the adapter weights
-            params = OrderedDict((k.replace(".base_layer.", "."), v) for k, v in params.items() if not ".lora_" in k)
+            params = OrderedDict((k.replace(".base_layer.", "."), v) if ".base_layer." in k else (k, v) for k, v in params.items() if not ".lora_" in k) 
         else:
             params = self.module.state_dict()
-
         log_gpu_memory_usage('After state_dict() in sharding manager memory', logger=logger)
         # Copy, not share memory
         load_format = 'hf' if self.full_params else 'dtensor'
-        if vllm_version in ('0.4.2', '0.5.4', '0.6.3'):
-            self.inference_engine.sync_model_weights(params, load_format=load_format)
-        else:
-            self.inference_engine.wake_up()
-            # TODO(ZSL): deal with 'hf' format
-            if load_format == 'dtensor':
-                from verl.third_party.vllm import load_dtensor_weights
-                load_dtensor_weights(
-                    params, self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model)
-            else:
-                raise NotImplementedError(f'load_format {load_format} not implemented')
+        self.inference_engine.sync_model_weights(params, load_format=load_format)
+        # if vllm_version in ('0.4.2', '0.5.4', '0.6.3'):
+        #     self.inference_engine.sync_model_weights(params, load_format=load_format)
+        # else:
+        #     self.inference_engine.wake_up()
+        #     # TODO(ZSL): deal with 'hf' format
+        #     if load_format == 'dtensor':
+        #         from verl.third_party.vllm import load_dtensor_weights
+        #         load_dtensor_weights(
+        #             params, self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model)
+        #     else:
+        #         raise NotImplementedError(f'load_format {load_format} not implemented')
         log_gpu_memory_usage('After sync model weights in sharding manager', logger=logger)
 
         if isinstance(self.module._fsdp_wrapped_module, PeftModel):

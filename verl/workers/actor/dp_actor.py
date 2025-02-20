@@ -29,7 +29,14 @@ from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import logprobs_from_logits, masked_mean
 from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_unpad
 from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
+from verl.utils.debug import log_gpu_memory_usage
 import verl.utils.torch_functional as verl_F
+
+import logging
+import os
+
+logger = logging.getLogger(__file__)
+logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
 
@@ -228,7 +235,7 @@ class DataParallelPPOActor(BasePPOActor):
                 micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
             self.actor_optimizer.zero_grad()
-
+            log_gpu_memory_usage('Before update policy', logger=logger)
             for data in micro_batches:
                 data = data.cuda()  # actor device is cpu when using offload
                 responses = data['responses']
@@ -243,7 +250,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-
+                log_gpu_memory_usage('After forward micro batch', logger=logger)
                 pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,
                                                                               advantages=advantages,

@@ -22,6 +22,7 @@ import warnings
 import torch
 import torch.distributed
 from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
@@ -235,7 +236,7 @@ class ActorRolloutRefWorker(Worker):
                 actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
 
             if enable_gradient_checkpointing:
-                actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
+                actor_module.base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -285,7 +286,6 @@ class ActorRolloutRefWorker(Worker):
             sync_module_states=True,
             device_mesh=self.device_mesh,
             forward_prefetch=False)
-
         log_gpu_memory_usage('After Actor FSDP init', logger=logger)
 
         # TODO: add more optimizer args into config
@@ -345,6 +345,7 @@ class ActorRolloutRefWorker(Worker):
             else:
                 raise NotImplementedError("vllm_mode must be 'customized' or 'spmd'")
             log_gpu_memory_usage('After building vllm rollout', logger=None)
+            # with FSDP.summon_full_params(rollout):
             if torch.distributed.get_world_size() == 1:
                 self.config.rollout.load_format = 'dummy_hf'
             rollout_sharding_manager = FSDPVLLMShardingManager(module=self.actor_module_fsdp,
@@ -352,6 +353,7 @@ class ActorRolloutRefWorker(Worker):
                                                                model_config=self.actor_model_config,
                                                                full_params='hf' in self.config.rollout.load_format,
                                                                device_mesh=rollout_device_mesh)
+            
             log_gpu_memory_usage('After building sharding manager', logger=None)
 
         return rollout, rollout_sharding_manager
@@ -518,6 +520,7 @@ class ActorRolloutRefWorker(Worker):
         assert self._is_actor
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        
         from contextlib import nullcontext
         adapter_ctx = self.actor.actor_module.disable_adapter() if no_lora else nullcontext()
         with adapter_ctx:
