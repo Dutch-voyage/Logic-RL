@@ -12,4 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import RayResourcePool, RayClassWithInitArgs, RayWorkerGroup, create_colocated_worker_cls
+from .modeling_qwen2_megatron import (
+    # original model with megatron
+    ParallelQwen2Model,
+    ParallelQwen2ForCausalLM,
+    # rmpad with megatron
+    ParallelQwen2ForCausalLMRmPad,
+    ParallelQwen2ForValueRmPad,
+    # rmpad with megatron and pipeline parallelism
+    ParallelQwen2ForCausalLMRmPadPP,
+    ParallelQwen2ForValueRmPadPP)
