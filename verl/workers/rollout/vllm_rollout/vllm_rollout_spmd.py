@@ -122,7 +122,11 @@ class vLLMRollout(BaseRollout):
         # supporting adding any sampling params from the config file
         for k in config.keys():
             if hasattr(SamplingParams(), str(k)):
-                kwargs[k] = config.get(k)
+                if k == "stop_criteria":
+                    from verl.utils.stop_criteria import get_stop_criteria
+                    kwargs[k] = get_stop_criteria(config.get(k))
+                else:
+                    kwargs[k] = config.get(k)
 
         print(f"kwargs: {kwargs}")
         self.sampling_params = SamplingParams(**kwargs)
